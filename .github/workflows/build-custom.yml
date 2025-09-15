@@ -1,0 +1,343 @@
+name: Custom Build (Linux & macOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_nginx:
+        description: 'Build nginx binaries'
+        required: true
+        default: true
+        type: boolean
+      build_njs:
+        description: 'Build njs binaries'
+        required: true
+        default: true
+        type: boolean
+      nginx_versions:
+        description: 'Nginx versions to build (comma separated)'
+        required: true
+        default: '1.18.x,1.20.x,1.22.x,1.24.x,1.26.x,1.27.x,1.28.x,1.29.x'
+        type: string
+      njs_versions:
+        description: 'NJS versions to build (comma separated)'
+        required: true
+        default: '0.8.x'
+        type: string
+      build_variants:
+        description: 'Build variants (comma separated: default,stream)'
+        required: true
+        default: 'default,stream'
+        type: string
+      platforms:
+        description: 'Target platforms (comma separated: linux,darwin)'
+        required: true
+        default: 'linux,darwin'
+        type: string
+      architectures:
+        description: 'Target architectures (comma separated: x86_64,aarch64)'
+        required: true
+        default: 'x86_64,aarch64'
+        type: string
+
+env:
+  ALPINE_BRANCH: v3.20
+  NGINX_MODULES: >-
+    openresty/echo-nginx-module
+    openresty/headers-more-nginx-module
+    vision5/ngx_devel_kit
+    openresty/set-misc-nginx-module
+    kjdev/nginx-auth-jwt
+    kjdev/nginx-keyval
+  NGINX_MODULES_WIN32: >-
+    openresty/echo-nginx-module
+    openresty/headers-more-nginx-module
+    vision5/ngx_devel_kit
+    openresty/set-misc-nginx-module
+  CFLAGS: -Os -fomit-frame-pointer -pipe
+  LINUX_LDFLAGS: -static
+  DARWIN_LDFLAGS: -static-libgcc
+  WIN32_LDFLAGS: -static
+
+jobs:
+  # 生成构建矩阵
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      nginx-matrix: ${{ steps.nginx-matrix.outputs.matrix }}
+      njs-matrix: ${{ steps.njs-matrix.outputs.matrix }}
+    steps:
+      - name: Generate nginx build matrix
+        id: nginx-matrix
+        if: inputs.build_nginx
+        run: |
+          # 解析输入参数
+          IFS=',' read -ra VERSIONS <<< "${{ inputs.nginx_versions }}"
+          IFS=',' read -ra VARIANTS <<< "${{ inputs.build_variants }}"
+          IFS=',' read -ra PLATFORMS <<< "${{ inputs.platforms }}"
+          IFS=',' read -ra ARCHS <<< "${{ inputs.architectures }}"
+          
+          # 生成矩阵
+          matrix='{"include":['
+          first=true
+          
+          for version in "${VERSIONS[@]}"; do
+            for variant in "${VARIANTS[@]}"; do
+              for platform in "${PLATFORMS[@]}"; do
+                for arch in "${ARCHS[@]}"; do
+                  # 跳过不支持的组合
+                  if [[ "$platform" == "darwin" && "$arch" == "aarch64" ]]; then
+                    continue  # macOS 暂不支持 aarch64
+                  fi
+                  
+                  if [ "$first" = true ]; then
+                    first=false
+                  else
+                    matrix+=','
+                  fi
+                  
+                  variant_suffix=""
+                  if [ "$variant" = "stream" ]; then
+                    variant_suffix="-stream"
+                  fi
+                  
+                  matrix+="{\"nginx_version\":\"${version}\",\"variant\":\"${variant}\",\"variant_suffix\":\"${variant_suffix}\",\"platform\":\"${platform}\",\"arch\":\"${arch}\"}"
+                done
+              done
+            done
+          done
+          
+          matrix+=']}'
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+          echo "Generated nginx matrix: $matrix"
+
+      - name: Generate njs build matrix
+        id: njs-matrix
+        if: inputs.build_njs
+        run: |
+          # 解析输入参数
+          IFS=',' read -ra VERSIONS <<< "${{ inputs.njs_versions }}"
+          IFS=',' read -ra PLATFORMS <<< "${{ inputs.platforms }}"
+          IFS=',' read -ra ARCHS <<< "${{ inputs.architectures }}"
+          
+          # 生成矩阵
+          matrix='{"include":['
+          first=true
+          
+          for version in "${VERSIONS[@]}"; do
+            for variant in "default" "debug"; do
+              for platform in "${PLATFORMS[@]}"; do
+                for arch in "${ARCHS[@]}"; do
+                  # 跳过不支持的组合
+                  if [[ "$platform" == "darwin" && "$arch" == "aarch64" ]]; then
+                    continue  # macOS 暂不支持 aarch64
+                  fi
+                  
+                  if [ "$first" = true ]; then
+                    first=false
+                  else
+                    matrix+=','
+                  fi
+                  
+                  variant_suffix=""
+                  if [ "$variant" = "debug" ]; then
+                    variant_suffix="-debug"
+                  fi
+                  
+                  matrix+="{\"njs_version\":\"${version}\",\"variant\":\"${variant}\",\"variant_suffix\":\"${variant_suffix}\",\"platform\":\"${platform}\",\"arch\":\"${arch}\"}"
+                done
+              done
+            done
+          done
+          
+          matrix+=']}'
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+          echo "Generated njs matrix: $matrix"
+
+  # nginx 构建任务
+  build-nginx:
+    needs: generate-matrix
+    if: inputs.build_nginx && needs.generate-matrix.outputs.nginx-matrix != ''
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.nginx-matrix) }}
+    runs-on: ${{ matrix.platform == 'linux' && 'ubuntu-latest' || 'macos-latest' }}
+    name: nginx-${{ matrix.nginx_version }}${{ matrix.variant_suffix }}-${{ matrix.arch }}-${{ matrix.platform }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download and extract nginx
+        run: ./scripts/fetch-sources -d . nginx/nginx@release-${{ matrix.nginx_version }}
+
+      - name: Download and extract nginx modules
+        run: ./scripts/fetch-sources nginx/njs@0.x.x $NGINX_MODULES
+
+      # Linux 构建
+      - name: Install Alpine ${{ env.ALPINE_BRANCH }} for ${{ matrix.arch }}
+        if: matrix.platform == 'linux'
+        uses: jirutka/setup-alpine@v1
+        with:
+          arch: ${{ matrix.arch }}
+          branch: ${{ env.ALPINE_BRANCH }}
+          packages: >
+            build-base
+            jansson-dev
+            jansson-static
+            linux-headers
+            openssl-dev
+            openssl-libs-static
+            pcre-dev
+            zlib-dev
+            zlib-static
+
+      - name: Build nginx (Linux)
+        if: matrix.platform == 'linux'
+        env:
+          NGINX_MODULES: nginx/njs ${{ env.NGINX_MODULES }}
+          VARIANT: ${{ matrix.variant_suffix }}
+          CFLAGS: ${{ env.CFLAGS }}
+          LDFLAGS: ${{ env.LINUX_LDFLAGS }}
+        run: ./scripts/build-nginx
+        shell: alpine.sh {0}
+
+      # macOS 构建
+      - name: Install dependencies (macOS)
+        if: matrix.platform == 'darwin'
+        run: brew install gsed jansson jq openssl@3 pcre zlib
+
+      - name: Remove dylibs (macOS)
+        if: matrix.platform == 'darwin'
+        run: |
+          rm /opt/homebrew/opt/jansson/lib/*.dylib
+          rm /opt/homebrew/opt/openssl/lib/*.dylib
+          rm /opt/homebrew/opt/pcre/lib/*.dylib
+          rm /opt/homebrew/opt/zlib/lib/*.dylib
+
+      - name: Build nginx (macOS)
+        if: matrix.platform == 'darwin'
+        env:
+          NGINX_MODULES: nginx/njs ${{ env.NGINX_MODULES }}
+          VARIANT: ${{ matrix.variant_suffix }}
+          CFLAGS: ${{ env.CFLAGS }} -I/opt/homebrew/opt/jansson/include -I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/pcre/include -I/opt/homebrew/opt/zlib/include
+          LDFLAGS: ${{ env.DARWIN_LDFLAGS }} -L/opt/homebrew/opt/jansson/lib -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/pcre/lib -L/opt/homebrew/opt/zlib/lib
+        run: ./scripts/build-nginx
+
+      - name: Upload nginx binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nginx-${{ matrix.nginx_version }}${{ matrix.variant_suffix }}-${{ matrix.arch }}-${{ matrix.platform }}
+          path: artifact/*
+
+  # njs 构建任务
+  build-njs:
+    needs: generate-matrix
+    if: inputs.build_njs && needs.generate-matrix.outputs.njs-matrix != ''
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.njs-matrix) }}
+    runs-on: ${{ matrix.platform == 'linux' && 'ubuntu-latest' || 'macos-latest' }}
+    name: njs-${{ matrix.njs_version }}${{ matrix.variant_suffix }}-${{ matrix.arch }}-${{ matrix.platform }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download and extract njs
+        run: ./scripts/fetch-sources -d . nginx/njs@${{ matrix.njs_version }}
+
+      # Linux 构建
+      - name: Install Alpine ${{ env.ALPINE_BRANCH }} for ${{ matrix.arch }}
+        if: matrix.platform == 'linux'
+        uses: jirutka/setup-alpine@v1
+        with:
+          arch: ${{ matrix.arch }}
+          branch: ${{ env.ALPINE_BRANCH }}
+          packages: >
+            build-base
+            linux-headers
+            openssl-dev
+            openssl-libs-static
+            pcre-dev
+            zlib-dev
+            zlib-static
+
+      - name: Build njs (Linux)
+        if: matrix.platform == 'linux'
+        env:
+          VARIANT: ${{ matrix.variant_suffix }}
+          CFLAGS: ${{ env.CFLAGS }}
+          LDFLAGS: ${{ env.LINUX_LDFLAGS }}
+        run: ./scripts/build-njs
+        shell: alpine.sh {0}
+
+      # macOS 构建
+      - name: Install dependencies (macOS)
+        if: matrix.platform == 'darwin'
+        run: brew install gsed jq openssl@3 pcre zlib
+
+      - name: Remove dylibs (macOS)
+        if: matrix.platform == 'darwin'
+        run: |
+          rm /opt/homebrew/opt/openssl/lib/*.dylib
+          rm /opt/homebrew/opt/pcre/lib/*.dylib
+          rm /opt/homebrew/opt/zlib/lib/*.dylib
+
+      - name: Build njs (macOS)
+        if: matrix.platform == 'darwin'
+        env:
+          VARIANT: ${{ matrix.variant_suffix }}
+          CFLAGS: ${{ env.CFLAGS }} -I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/pcre/include -I/opt/homebrew/opt/zlib/include
+          LDFLAGS: ${{ env.DARWIN_LDFLAGS }} -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/pcre/lib -L/opt/homebrew/opt/zlib/lib
+        run: ./scripts/build-njs
+
+      - name: Upload njs binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: njs-${{ matrix.njs_version }}${{ matrix.variant_suffix }}-${{ matrix.arch }}-${{ matrix.platform }}
+          path: artifact/*
+
+  # 发布到 binaries 分支
+  publish:
+    needs: [build-nginx, build-njs]
+    if: always() && (needs.build-nginx.result == 'success' || needs.build-njs.result == 'success')
+    runs-on: ubuntu-latest
+    name: Publish binaries
+    
+    steps:
+      - name: Checkout binaries branch
+        uses: actions/checkout@v4
+        with:
+          ref: binaries
+          path: binaries
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Copy binaries to binaries branch
+        run: |
+          cd binaries
+          
+          # 复制所有构建的二进制文件
+          for artifact_dir in ../artifacts/*/; do
+            if [ -d "$artifact_dir" ]; then
+              cp -v "$artifact_dir"/* . || true
+            fi
+          done
+          
+          # 生成索引文件
+          ls -la *.* > index.txt || true
+          
+          # 提交更改
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update binaries - $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            git push
+          fi

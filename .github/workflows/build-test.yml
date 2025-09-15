@@ -1,0 +1,262 @@
+name: Build Custom Nginx
+on:
+  workflow_dispatch:
+    inputs:
+      nginx_version:
+        description: 'Nginx version to build'
+        required: true
+        default: '1.29.x'
+        type: choice
+        options:
+          - '1.18.x'
+          - '1.19.x'
+          - '1.20.x'
+          - '1.21.x'
+          - '1.22.x'
+          - '1.23.x'
+          - '1.24.x'
+          - '1.25.x'
+          - '1.26.x'
+          - '1.27.x'
+          - '1.28.x'
+          - '1.29.x'
+      njs_version:
+        description: 'NJS version to build'
+        required: true
+        default: '0.x.x'
+        type: choice
+        options:
+          - '0.8.x'
+          - '0.9.x'
+          - '0.x.x'
+      variant:
+        description: 'Build variant'
+        required: true
+        default: 'stream'
+        type: choice
+        options:
+          - 'default'
+          - 'stream'
+          - 'both'
+      architecture:
+        description: 'Target architecture'
+        required: true
+        default: 'x86_64'
+        type: choice
+        options:
+          - 'x86_64'
+          - 'aarch64'
+          - 'both'
+      platform:
+        description: 'Target platform'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - 'linux'
+          - 'darwin'
+          - 'both'
+      build_njs:
+        description: 'Also build NJS binaries'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  ALPINE_BRANCH: v3.21
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  CFLAGS: -Os -fomit-frame-pointer -pipe
+  LINUX_LDFLAGS: -static -Wl,--as-needed -Wl,-Map,linker.map
+  DARWIN_LDFLAGS: -Wl,-map,linker.map
+  WIN32_LDFLAGS: -Wl,--as-needed -Wl,-Map,linker.map
+  NGINX_MODULES: >-
+    kjdev/nginx-auth-jwt
+    kjdev/nginx-keyval
+    vision5/ngx_devel_kit
+    openresty/echo-nginx-module
+    openresty/headers-more-nginx-module
+    openresty/set-misc-nginx-module
+  NGINX_MODULES_WIN32: >-
+    vision5/ngx_devel_kit
+    openresty/echo-nginx-module
+    openresty/headers-more-nginx-module
+    openresty/set-misc-nginx-module
+
+jobs:
+  # NJS builds for Linux and macOS
+  build-njs:
+    name: Build njs-${{ matrix.njs_version }}-${{ matrix.arch }}-${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
+    if: inputs.build_njs
+    strategy:
+      matrix:
+        njs_version: 
+          - ${{ inputs.njs_version }}
+        arch: ${{ fromJson(
+          inputs.architecture == 'both' && '["x86_64", "aarch64"]' ||
+          format('["{0}"]', inputs.architecture)
+        ) }}
+        include:
+          - os: linux
+            runner: ubuntu-latest
+            condition: ${{ inputs.platform == 'linux' || inputs.platform == 'both' }}
+          - os: darwin
+            runner: macos-latest
+            condition: ${{ inputs.platform == 'darwin' || inputs.platform == 'both' }}
+        exclude:
+          - os: linux
+            condition: false
+          - os: darwin
+            condition: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download and extract njs
+        run: ./scripts/fetch-sources -d . nginx/njs@${{ matrix.njs_version }}
+
+      - name: Install Alpine dependencies (Linux)
+        if: matrix.os == 'linux'
+        uses: jirutka/setup-alpine@v1
+        with:
+          arch: ${{ matrix.arch }}
+          branch: ${{ env.ALPINE_BRANCH }}
+          packages: >
+            build-base
+            libedit-dev
+            libedit-static
+            ncurses-dev
+            ncurses-static
+            openssl-dev
+            openssl-libs-static
+            pcre-dev
+            zlib-static
+
+      - name: Install Homebrew dependencies (macOS)
+        if: matrix.os == 'darwin'
+        run: brew install gsed jq libedit openssl@3 ncurses pcre zlib
+
+      - name: Remove dylibs (macOS)
+        if: matrix.os == 'darwin'
+        run: |
+          rm /opt/homebrew/opt/libedit/lib/*.dylib
+          rm /opt/homebrew/opt/openssl/lib/*.dylib
+          rm /opt/homebrew/opt/ncurses/lib/*.dylib
+          rm /opt/homebrew/opt/pcre/lib/*.dylib
+          rm /opt/homebrew/opt/zlib/lib/*.dylib
+
+      - name: Build njs (Linux)
+        if: matrix.os == 'linux'
+        env:
+          VARIANT: ''
+          CFLAGS: ${{ env.CFLAGS }}
+          LDFLAGS: ${{ env.LINUX_LDFLAGS }}
+        run: ./scripts/build-njs
+        shell: alpine.sh {0}
+
+      - name: Build njs (macOS)
+        if: matrix.os == 'darwin'
+        env:
+          VARIANT: ''
+          CFLAGS: ${{ env.CFLAGS }} -I/opt/homebrew/opt/libedit/include -I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/ncurses/include -I/opt/homebrew/opt/pcre/include -I/opt/homebrew/opt/zlib/include
+          LDFLAGS: ${{ env.DARWIN_LDFLAGS }} -L/opt/homebrew/opt/libedit/lib -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/ncurses/lib -L/opt/homebrew/opt/pcre/lib -L/opt/homebrew/opt/zlib/lib
+        run: ./scripts/build-njs
+
+      - name: Upload njs binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: njs-${{ matrix.njs_version }}-${{ matrix.arch }}-${{ matrix.os }}
+          path: artifact/*
+
+  # Nginx builds for Linux and macOS
+  build-nginx:
+    name: Build nginx-${{ inputs.nginx_version }}-${{ matrix.variant }}-${{ matrix.arch }}-${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        variant: ${{ fromJson(
+          inputs.variant == 'both' && '["default", "stream"]' ||
+          inputs.variant == 'default' && '["default"]' ||
+          inputs.variant == 'stream' && '["stream"]' ||
+          '["default", "stream"]'
+        ) }}
+        arch: ${{ fromJson(
+          inputs.architecture == 'both' && '["x86_64", "aarch64"]' ||
+          format('["{0}"]', inputs.architecture)
+        ) }}
+        include:
+          - os: linux
+            runner: ubuntu-latest
+            condition: ${{ inputs.platform == 'linux' || inputs.platform == 'both' }}
+          - os: darwin
+            runner: macos-latest
+            condition: ${{ inputs.platform == 'darwin' || inputs.platform == 'both' }}
+        exclude:
+          - os: linux
+            condition: false
+          - os: darwin
+            condition: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download and extract nginx
+        run: ./scripts/fetch-sources -d . nginx/nginx@release-${{ inputs.nginx_version }}
+
+      - name: Download and extract nginx modules
+        run: ./scripts/fetch-sources nginx/njs@${{ inputs.njs_version }} $NGINX_MODULES
+
+      - name: Install Alpine dependencies (Linux)
+        if: matrix.os == 'linux'
+        uses: jirutka/setup-alpine@v1
+        with:
+          arch: ${{ matrix.arch }}
+          branch: ${{ env.ALPINE_BRANCH }}
+          packages: >
+            build-base
+            jansson-dev
+            jansson-static
+            linux-headers
+            openssl-dev
+            openssl-libs-static
+            pcre-dev
+            zlib-dev
+            zlib-static
+
+      - name: Install Homebrew dependencies (macOS)
+        if: matrix.os == 'darwin'
+        run: brew install gsed jansson jq openssl@3 pcre zlib
+
+      - name: Remove dylibs (macOS)
+        if: matrix.os == 'darwin'
+        run: |
+          rm /opt/homebrew/opt/jansson/lib/*.dylib
+          rm /opt/homebrew/opt/openssl/lib/*.dylib
+          rm /opt/homebrew/opt/pcre/lib/*.dylib
+          rm /opt/homebrew/opt/zlib/lib/*.dylib
+
+      - name: Build nginx (Linux)
+        if: matrix.os == 'linux'
+        env:
+          NGINX_MODULES: nginx/njs ${{ env.NGINX_MODULES }}
+          VARIANT: ${{ matrix.variant == 'stream' && '-stream' || '' }}
+          CFLAGS: ${{ env.CFLAGS }}
+          LDFLAGS: ${{ env.LINUX_LDFLAGS }}
+        run: ./scripts/build-nginx
+        shell: alpine.sh {0}
+
+      - name: Build nginx (macOS)
+        if: matrix.os == 'darwin'
+        env:
+          NGINX_MODULES: nginx/njs ${{ env.NGINX_MODULES }}
+          VARIANT: ${{ matrix.variant == 'stream' && '-stream' || '' }}
+          CFLAGS: ${{ env.CFLAGS }} -I/opt/homebrew/opt/jansson/include -I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/pcre/include -I/opt/homebrew/opt/zlib/include
+          LDFLAGS: ${{ env.DARWIN_LDFLAGS }} -L/opt/homebrew/opt/jansson/lib -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/pcre/lib -L/opt/homebrew/opt/zlib/lib
+        run: ./scripts/build-nginx
+
+      - name: Upload nginx binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nginx-${{ inputs.nginx_version }}-${{ matrix.variant }}-${{ matrix.arch }}-${{ matrix.os }}
+          path: artifact/*
+

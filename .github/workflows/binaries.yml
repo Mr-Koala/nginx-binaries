@@ -13,6 +13,28 @@ on:
   pull_request:
   schedule:
     - cron:  '0 0 * * 0'  # run each Sunday
+  workflow_dispatch:
+    inputs:
+      nginx_versions:
+        description: 'Nginx versions to build (comma-separated, e.g., 1.28.x,1.27.x)'
+        required: false
+        default: '1.28.x'
+        type: string
+      variants:
+        description: 'Variants to build (comma-separated, e.g., ,stream)'
+        required: false
+        default: ',stream'
+        type: string
+      architectures:
+        description: 'Architectures to build (comma-separated, e.g., x86_64,aarch64)'
+        required: false
+        default: 'x86_64'
+        type: string
+      skip_njs:
+        description: 'Skip njs builds (faster for testing)'
+        required: false
+        default: false
+        type: boolean
 
 env:
   ALPINE_BRANCH: v3.21
@@ -45,6 +67,7 @@ jobs:
   njs-multi-linux:
     name: njs-${{ matrix.NJS_VERSION }}${{ matrix.VARIANT }}-${{ matrix.ARCH }}-linux
     runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_njs }}
     strategy:
       matrix:
         NJS_VERSION:
@@ -98,6 +121,7 @@ jobs:
   njs-x86_64-darwin:
     name: njs-${{ matrix.NJS_VERSION }}${{ matrix.VARIANT }}-x86_64-darwin
     runs-on: macos-latest
+    if: ${{ !inputs.skip_njs }}
     strategy:
       matrix:
         NJS_VERSION:
