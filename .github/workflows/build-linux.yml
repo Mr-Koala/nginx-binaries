@@ -1,0 +1,361 @@
+name: Optimized Build (Linux Only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_nginx:
+        description: 'Build nginx binaries'
+        required: true
+        default: true
+        type: boolean
+      build_njs:
+        description: 'Build njs binaries'
+        required: true
+        default: true
+        type: boolean
+      nginx_versions:
+        description: 'Nginx versions to build'
+        required: true
+        default: '1.28.x,1.29.x'
+        type: choice
+        options:
+          - '1.28.x'
+          - '1.29.x'
+          - '1.28.x,1.29.x'
+      njs_versions:
+        description: 'NJS versions to build'
+        required: true
+        default: '0.8.x,0.9.x'
+        type: choice
+        options:
+          - '0.8.x'
+          - '0.9.x'
+          - '0.8.x,0.9.x'
+      build_variants:
+        description: 'Build variants'
+        required: true
+        default: 'default,stream'
+        type: choice
+        options:
+          - 'default'
+          - 'stream'
+          - 'default,stream'
+      architectures:
+        description: 'Target architectures'
+        required: true
+        default: 'x86_64,aarch64'
+        type: choice
+        options:
+          - 'x86_64'
+          - 'aarch64'
+          - 'x86_64,aarch64'
+
+env:
+  ALPINE_BRANCH: v3.20
+  NGINX_MODULES: >-
+    openresty/echo-nginx-module
+    openresty/headers-more-nginx-module
+    vision5/ngx_devel_kit
+    openresty/set-misc-nginx-module
+    kjdev/nginx-auth-jwt
+    kjdev/nginx-keyval
+  CFLAGS: -Os -fomit-frame-pointer -pipe
+  LINUX_LDFLAGS: -static
+
+jobs:
+  # 生成构建矩阵
+  generate-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      nginx-matrix: ${{ steps.nginx-matrix.outputs.matrix }}
+      njs-matrix: ${{ steps.njs-matrix.outputs.matrix }}
+    steps:
+      - name: Generate nginx build matrix
+        id: nginx-matrix
+        if: inputs.build_nginx
+        run: |
+          # 解析输入参数
+          IFS=',' read -ra VERSIONS <<< "${{ inputs.nginx_versions }}"
+          IFS=',' read -ra VARIANTS <<< "${{ inputs.build_variants }}"
+          IFS=',' read -ra ARCHS <<< "${{ inputs.architectures }}"
+          
+          # 生成矩阵
+          matrix='{"include":['
+          first=true
+          
+          for version in "${VERSIONS[@]}"; do
+            for variant in "${VARIANTS[@]}"; do
+              for arch in "${ARCHS[@]}"; do
+                if [ "$first" = true ]; then
+                  first=false
+                else
+                  matrix+=','
+                fi
+                
+                variant_suffix=""
+                if [ "$variant" = "stream" ]; then
+                  variant_suffix="-stream"
+                fi
+                
+                matrix+="{\"nginx_version\":\"${version}\",\"variant\":\"${variant}\",\"variant_suffix\":\"${variant_suffix}\",\"arch\":\"${arch}\"}"
+              done
+            done
+          done
+          
+          matrix+=']}'
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+          echo "Generated nginx matrix: $matrix"
+
+      - name: Generate njs build matrix
+        id: njs-matrix
+        if: inputs.build_njs
+        run: |
+          # 解析输入参数
+          IFS=',' read -ra VERSIONS <<< "${{ inputs.njs_versions }}"
+          IFS=',' read -ra ARCHS <<< "${{ inputs.architectures }}"
+          
+          # 生成矩阵
+          matrix='{"include":['
+          first=true
+          
+          for version in "${VERSIONS[@]}"; do
+            for variant in "default" "debug"; do
+              for arch in "${ARCHS[@]}"; do
+                if [ "$first" = true ]; then
+                  first=false
+                else
+                  matrix+=','
+                fi
+                
+                variant_suffix=""
+                if [ "$variant" = "debug" ]; then
+                  variant_suffix="-debug"
+                fi
+                
+                matrix+="{\"njs_version\":\"${version}\",\"variant\":\"${variant}\",\"variant_suffix\":\"${variant_suffix}\",\"arch\":\"${arch}\"}"
+              done
+            done
+          done
+          
+          matrix+=']}'
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+          echo "Generated njs matrix: $matrix"
+
+  # nginx 构建任务 (仅 Linux)
+  build-nginx:
+    needs: generate-matrix
+    if: inputs.build_nginx && needs.generate-matrix.outputs.nginx-matrix != ''
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.nginx-matrix) }}
+    runs-on: ubuntu-latest
+    name: nginx-${{ matrix.nginx_version }}${{ matrix.variant_suffix }}-${{ matrix.arch }}-linux
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download and extract nginx
+        run: ./scripts/fetch-sources -d . nginx/nginx@release-${{ matrix.nginx_version }}
+
+      - name: Download and extract nginx modules
+        run: ./scripts/fetch-sources nginx/njs@0.x.x $NGINX_MODULES
+
+      - name: Install Alpine ${{ env.ALPINE_BRANCH }} for ${{ matrix.arch }}
+        uses: jirutka/setup-alpine@v1
+        with:
+          arch: ${{ matrix.arch }}
+          branch: ${{ env.ALPINE_BRANCH }}
+          packages: >
+            build-base
+            jansson-dev
+            jansson-static
+            linux-headers
+            openssl-dev
+            openssl-libs-static
+            pcre-dev
+            zlib-dev
+            zlib-static
+
+      - name: Build nginx
+        env:
+          NGINX_MODULES: nginx/njs ${{ env.NGINX_MODULES }}
+          VARIANT: ${{ matrix.variant_suffix }}
+          CFLAGS: ${{ env.CFLAGS }}
+          LDFLAGS: ${{ env.LINUX_LDFLAGS }}
+        run: ./scripts/build-nginx
+        shell: alpine.sh {0}
+
+      - name: Upload nginx binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nginx-${{ matrix.nginx_version }}${{ matrix.variant_suffix }}-${{ matrix.arch }}-linux
+          path: artifact/*
+          retention-days: 90
+
+  # njs 构建任务 (仅 Linux)
+  build-njs:
+    needs: generate-matrix
+    if: inputs.build_njs && needs.generate-matrix.outputs.njs-matrix != ''
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.generate-matrix.outputs.njs-matrix) }}
+    runs-on: ubuntu-latest
+    name: njs-${{ matrix.njs_version }}${{ matrix.variant_suffix }}-${{ matrix.arch }}-linux
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download and extract njs
+        run: ./scripts/fetch-sources -d . nginx/njs@${{ matrix.njs_version }}
+
+      - name: Install Alpine ${{ env.ALPINE_BRANCH }} for ${{ matrix.arch }}
+        uses: jirutka/setup-alpine@v1
+        with:
+          arch: ${{ matrix.arch }}
+          branch: ${{ env.ALPINE_BRANCH }}
+          packages: >
+            build-base
+            linux-headers
+            openssl-dev
+            openssl-libs-static
+            pcre-dev
+            zlib-dev
+            zlib-static
+
+      - name: Build njs
+        env:
+          VARIANT: ${{ matrix.variant_suffix }}
+          CFLAGS: ${{ env.CFLAGS }}
+          LDFLAGS: ${{ env.LINUX_LDFLAGS }}
+        run: ./scripts/build-njs
+        shell: alpine.sh {0}
+
+      - name: Upload njs binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: njs-${{ matrix.njs_version }}${{ matrix.variant_suffix }}-${{ matrix.arch }}-linux
+          path: artifact/*
+          retention-days: 90
+
+  # 发布到 binaries 分支
+  publish:
+    needs: [build-nginx, build-njs]
+    if: always() && (needs.build-nginx.result == 'success' || needs.build-njs.result == 'success')
+    runs-on: ubuntu-latest
+    name: Publish binaries to binaries branch
+    
+    steps:
+      - name: Checkout binaries branch
+        uses: actions/checkout@v4
+        with:
+          ref: binaries
+          path: binaries
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Copy binaries to binaries branch
+        run: |
+          cd binaries
+          
+          # 复制所有构建的二进制文件
+          for artifact_dir in ../artifacts/*/; do
+            if [ -d "$artifact_dir" ]; then
+              echo "Copying from $artifact_dir"
+              cp -v "$artifact_dir"/* . || true
+            fi
+          done
+          
+          # 生成索引文件
+          echo "# Binary Index - Generated $(date -u '+%Y-%m-%d %H:%M:%S UTC')" > index.md
+          echo "" >> index.md
+          echo "## Available Binaries" >> index.md
+          echo "" >> index.md
+          
+          # nginx 二进制文件
+          if ls nginx-* 1> /dev/null 2>&1; then
+            echo "### nginx Binaries" >> index.md
+            echo "" >> index.md
+            for file in nginx-*; do
+              if [ -f "$file" ]; then
+                size=$(ls -lh "$file" | awk '{print $5}')
+                echo "- [$file](./$file) ($size)" >> index.md
+              fi
+            done
+            echo "" >> index.md
+          fi
+          
+          # njs 二进制文件
+          if ls njs-* 1> /dev/null 2>&1; then
+            echo "### njs Binaries" >> index.md
+            echo "" >> index.md
+            for file in njs-*; do
+              if [ -f "$file" ]; then
+                size=$(ls -lh "$file" | awk '{print $5}')
+                echo "- [$file](./$file) ($size)" >> index.md
+              fi
+            done
+          fi
+          
+          # 提交更改
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add .
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update optimized binaries - $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+Built with:
+- nginx versions: ${{ inputs.nginx_versions }}
+- njs versions: ${{ inputs.njs_versions }}
+- variants: ${{ inputs.build_variants }}
+- architectures: ${{ inputs.architectures }}
+- platform: linux only"
+            git push
+            echo "✅ Binaries published to binaries branch"
+          fi
+
+  # 构建总结
+  summary:
+    needs: [build-nginx, build-njs, publish]
+    if: always()
+    runs-on: ubuntu-latest
+    name: Build Summary
+    
+    steps:
+      - name: Generate build summary
+        run: |
+          echo "# 🎉 Optimized Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **nginx versions**: ${{ inputs.nginx_versions }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **njs versions**: ${{ inputs.njs_versions }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build variants**: ${{ inputs.build_variants }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Architectures**: ${{ inputs.architectures }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Platform**: Linux only" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **nginx build**: ${{ needs.build-nginx.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **njs build**: ${{ needs.build-njs.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Publish**: ${{ needs.publish.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Download" >> $GITHUB_STEP_SUMMARY
+          echo "Binaries are available in:" >> $GITHUB_STEP_SUMMARY
+          echo "1. **Artifacts** (this page)" >> $GITHUB_STEP_SUMMARY
+          echo "2. **binaries branch**: \`https://github.com/${{ github.repository }}/tree/binaries\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. **GitHub Pages** (if enabled): \`https://${{ github.repository_owner }}.github.io/nginx-binaries/\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Usage Example" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "# Download nginx with stream support" >> $GITHUB_STEP_SUMMARY
+          echo "curl -L -o nginx https://github.com/${{ github.repository }}/raw/binaries/nginx-1.28.0-stream-x86_64-linux" >> $GITHUB_STEP_SUMMARY
+          echo "chmod +x nginx" >> $GITHUB_STEP_SUMMARY
+          echo "./nginx -V" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
