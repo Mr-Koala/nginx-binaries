@@ -34,6 +34,15 @@ add_module() {
 configure() {
 	set -x  # log commands
 
+	# Determine if stream modules should be enabled
+	stream_modules=""
+	if [ "${VARIANT:-}" = "-stream" ] || [ "${ENABLE_STREAM:-}" = "1" ]; then
+		stream_modules="--with-stream \
+			--with-stream_ssl_module \
+			--with-stream_realip_module \
+			--with-stream_ssl_preread_module"
+	fi
+
 	NJS_LIBXSLT=NO \
 	./auto/configure \
 		--prefix="." \
@@ -65,6 +74,7 @@ configure() {
 		--without-http_scgi_module \
 		--without-http_grpc_module \
 		--without-http_memcached_module \
+		$stream_modules \
 		"$@"
 
 	# Don't load openssl.cnf unless the OPENSSL_CONF env. variable is
@@ -131,7 +141,13 @@ if [ -f linker.map ]; then
 	"$SCRIPT_DIR"/parse-mapfile-loaded-libs linker.map | tee -a .SOURCES
 fi
 
-BIN_NAME="nginx-${NGINX_VERSION}-${HOST_ARCH}-${HOST_OS}${EXEEXT}"
+# Add variant suffix to binary name if applicable
+VARIANT_SUFFIX=""
+if [ "${VARIANT:-}" = "-stream" ]; then
+	VARIANT_SUFFIX="-stream"
+fi
+
+BIN_NAME="nginx-${NGINX_VERSION}${VARIANT_SUFFIX}-${HOST_ARCH}-${HOST_OS}${EXEEXT}"
 
 mkdir -p artifact/
 install objs/nginx$EXEEXT artifact/$BIN_NAME

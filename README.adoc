@@ -58,6 +58,10 @@ await NginxBinary.versions({ version: '^1.21.5' })
 await NginxBinary.download({ version: '1.22.x' })
 // => '[...]/node_modules/.cache/nginx-binaries/nginx-1.22.0-x86_64-linux'
 
+// Download nginx with TCP/UDP proxy support (stream module)
+await NginxBinary.download({ version: '1.28.x', variant: 'stream' })
+// => '[...]/node_modules/.cache/nginx-binaries/nginx-1.28.0-stream-x86_64-linux'
+
 await NjsBinary.versions({ version: '^0.7.0' })
 // => ['0.7.1', '0.7.2', '0.7.3', '0.7.4']
 
@@ -242,7 +246,8 @@ Suffix `.exe` is used for Windows binaries only.
 1.27.x (mainline) +
 1.28.x (stable)
 
-.3+| _default_
+.3+| _default_ +
+stream footnote:stream[The `stream` variant includes TCP/UDP proxy modules for Layer 4 load balancing. See <<Stream Module Support>> for details.]
 | Linux
 | x86_64 +
 aarch64 +
@@ -337,5 +342,77 @@ nginx binaries include the latest version of the third-party modules available a
 *Linux* binary is statically linked with https://www.musl-libc.org[musl libc], libedit, openssl (3.x), ncurses, pcre and zlib from https://alpinelinux.org[Alpine Linux] {alpine-branch}.
 
 *macOS* binary is statically linked with libedit, openssl@1.1, ncurses, pcre and zlib from https://brew.sh[Homebrew].
+
+
+=== Stream Module Support
+
+The `stream` variant of nginx includes TCP/UDP proxy modules for Layer 4 load balancing and proxying. This enables nginx to act as a TCP/UDP load balancer in addition to its HTTP capabilities.
+
+==== Included Stream Modules
+
+*Core Stream Modules:*
+
+* https://nginx.org/en/docs/stream/ngx_stream_core_module.html[ngx_stream_core_module] - Core stream functionality
+* https://nginx.org/en/docs/stream/ngx_stream_proxy_module.html[ngx_stream_proxy_module] - TCP/UDP proxying
+* https://nginx.org/en/docs/stream/ngx_stream_upstream_module.html[ngx_stream_upstream_module] - Upstream server groups
+
+*Additional Stream Modules:*
+
+* https://nginx.org/en/docs/stream/ngx_stream_ssl_module.html[ngx_stream_ssl_module] - SSL/TLS support for stream
+* https://nginx.org/en/docs/stream/ngx_stream_realip_module.html[ngx_stream_realip_module] - Real IP address handling
+* https://nginx.org/en/docs/stream/ngx_stream_ssl_preread_module.html[ngx_stream_ssl_preread_module] - SSL preread for SNI routing
+
+==== Usage Examples
+
+*Download nginx with stream support:*
+
+[source, js, subs="+attributes"]
+----
+import { NginxBinary } from '{npm-name}'
+
+// Download nginx with TCP/UDP proxy capabilities
+const nginxPath = await NginxBinary.download({
+  version: '1.28.x',
+  variant: 'stream'
+})
+----
+
+*Basic TCP proxy configuration:*
+
+[source, nginx]
+----
+stream {
+    upstream backend {
+        server 192.168.1.10:3306;
+        server 192.168.1.11:3306;
+    }
+    
+    server {
+        listen 3306;
+        proxy_pass backend;
+    }
+}
+----
+
+*SSL passthrough with SNI routing:*
+
+[source, nginx]
+----
+stream {
+    map $ssl_preread_server_name $backend {
+        app1.example.com app1_backend;
+        app2.example.com app2_backend;
+        default          default_backend;
+    }
+    
+    server {
+        listen 443;
+        ssl_preread on;
+        proxy_pass $backend;
+    }
+}
+----
+
+See `examples/nginx-stream.conf` and `examples/download-stream-nginx.js` for complete configuration examples.
 
 endif::npm-readme[]

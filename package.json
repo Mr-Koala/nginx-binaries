@@ -30,7 +30,10 @@
     "clean": "rm -rf lib/ node_modules/.cache/",
     "lint": "tsc --noEmit",
     "prepublishOnly": "yarn build && asciidoctor -b docbook -a npm-readme -a gh-branch=v$npm_package_version -o - README.adoc | pandoc -f docbook -t gfm --shift-heading-level-by 1 --wrap preserve -o README.md",
-    "test": "nyc mocha"
+    "test": "nyc mocha",
+    "test:stream": "nyc mocha integration-tests/stream.test.ts",
+    "example:stream": "node examples/download-stream-nginx.js",
+    "demo:stream": "npm run build && npm run example:stream"
   },
   "engines": {
     "node": ">= 14.15.0"

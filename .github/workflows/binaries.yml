@@ -141,7 +141,7 @@ jobs:
           path: artifact/*
 
   nginx-multi-linux:
-    name: nginx-${{ matrix.NGINX_VERSION }}-${{ matrix.ARCH }}-linux
+    name: nginx-${{ matrix.NGINX_VERSION }}${{ matrix.VARIANT }}-${{ matrix.ARCH }}-linux
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -149,6 +149,9 @@ jobs:
           - 1.26.x
           - 1.27.x
           - 1.28.x
+        VARIANT:
+          - ''
+          - '-stream'
         ARCH:
           - x86_64
           - aarch64
@@ -189,6 +192,7 @@ jobs:
       - name: Build nginx
         env:
           NGINX_MODULES: nginx/njs ${{ env.NGINX_MODULES }}
+          VARIANT: ${{ matrix.VARIANT }}
           CFLAGS: ${{ env.CFLAGS }}
           LDFLAGS: ${{ env.LINUX_LDFLAGS }}
         run: ./master/scripts/build-nginx
@@ -197,11 +201,11 @@ jobs:
       - name: Upload nginx binary to artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nginx-${{ matrix.NGINX_VERSION }}-${{ matrix.ARCH }}-linux
+          name: nginx-${{ matrix.NGINX_VERSION }}${{ matrix.VARIANT }}-${{ matrix.ARCH }}-linux
           path: artifact/*
 
   nginx-x86_64-darwin:
-    name: nginx-${{ matrix.NGINX_VERSION }}-x86_64-darwin
+    name: nginx-${{ matrix.NGINX_VERSION }}${{ matrix.VARIANT }}-x86_64-darwin
     runs-on: macos-latest
     strategy:
       matrix:
@@ -209,6 +213,9 @@ jobs:
           - 1.26.x
           - 1.27.x
           - 1.28.x
+        VARIANT:
+          - ''
+          - '-stream'
         include:
           - NJS_VERSION: 0.x.x
           # Pin older njs version for old nginx.
@@ -241,6 +248,7 @@ jobs:
       - name: Build nginx
         env:
           NGINX_MODULES: nginx/njs ${{ env.NGINX_MODULES }}
+          VARIANT: ${{ matrix.VARIANT }}
           CFLAGS: ${{ env.CFLAGS }} -I/opt/homebrew/opt/jansson/include -I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/pcre/include -I/opt/homebrew/opt/zlib/include
           LDFLAGS: ${{ env.DARWIN_LDFLAGS }} -L/opt/homebrew/opt/jansson/lib -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/pcre/lib -L/opt/homebrew/opt/zlib/lib
         run: ./master/scripts/build-nginx
@@ -248,11 +256,11 @@ jobs:
       - name: Upload nginx binary to artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nginx-${{ matrix.NGINX_VERSION }}-x86_64-darwin
+          name: nginx-${{ matrix.NGINX_VERSION }}${{ matrix.VARIANT }}-x86_64-darwin
           path: artifact/*
 
   nginx-x86_64-win32:
-    name: nginx-${{ matrix.NGINX_VERSION }}-x86_64-win32
+    name: nginx-${{ matrix.NGINX_VERSION }}${{ matrix.VARIANT }}-x86_64-win32
     runs-on: windows-latest
     strategy:
       matrix:
@@ -260,6 +268,9 @@ jobs:
           - 1.26.x
           - 1.27.x
           - 1.28.x
+        VARIANT:
+          - ''
+          - '-stream'
     steps:
       - name: Setup MSYS2 and install packages
         uses: msys2/setup-msys2@v2
@@ -305,6 +316,7 @@ jobs:
         shell: msys2 {0}
         env:
           NGINX_MODULES: ${{ env.NGINX_MODULES_WIN32 }}
+          VARIANT: ${{ matrix.VARIANT }}
           # -DFD_SETSIZE=1024 is per official nginx win32 binary.
           CFLAGS: ${{ env.CFLAGS }} -DFD_SETSIZE=1024
           LDFLAGS: ${{ env.WIN32_LDFLAGS }}
@@ -313,7 +325,7 @@ jobs:
       - name: Upload nginx binary to artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nginx-${{ matrix.NGINX_VERSION }}-x86_64-win32
+          name: nginx-${{ matrix.NGINX_VERSION }}${{ matrix.VARIANT }}-x86_64-win32
           path: artifact/*
 
   upload:
