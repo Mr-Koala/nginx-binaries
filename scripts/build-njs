@@ -3,6 +3,42 @@ set -eu
 
 SCRIPT_DIR="$(dirname "$0")"
 
+# Parse command line arguments
+BUILD_SHELL=1
+BUILD_MODULES=0
+MODULE_TYPE="both"  # both, http, stream
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--modules-only)
+			BUILD_SHELL=0
+			BUILD_MODULES=1
+			shift
+			;;
+		--with-modules)
+			BUILD_MODULES=1
+			shift
+			;;
+		--module-type)
+			MODULE_TYPE="$2"
+			shift 2
+			;;
+		--help)
+			echo "Usage: $0 [OPTIONS]"
+			echo "Options:"
+			echo "  --modules-only     Only build nginx modules (skip shell)"
+			echo "  --with-modules     Build both shell and nginx modules"
+			echo "  --module-type TYPE Module type: both, http, stream (default: both)"
+			echo "  --help            Show this help"
+			exit 0
+			;;
+		*)
+			echo "Unknown option: $1" >&2
+			exit 1
+			;;
+	esac
+done
+
 NJS_VERSION=$(sed -En 's|.* ([^ ]*) njs$|\1|p;q' .SOURCES)
 HOST_ARCH=$(uname -m)
 HOST_OS=$(uname -s | tr '[A-Z]' '[a-z]')
@@ -23,6 +59,7 @@ esac
 
 set -x  # log commands
 
+# Configure and build libnjs (required for both shell and modules)
 # --no-pcre2 - prefer pcre (8.x) over pcre2 (10.x), it's much smaller
 ./configure \
 	--cc-opt="$CFLAGS" \
@@ -33,32 +70,161 @@ set -x  # log commands
 NJS_CFLAGS=$(sed -n 's/^NJS_CFLAGS\s*=\s*//p' build/Makefile)
 
 make libnjs
-cc -o build/njs \
-	$NJS_CFLAGS $LDFLAGS \
-	-Isrc -Ibuild -Injs \
-	$NJS_SHELL_C \
-	build/libnjs.a \
-	-lcrypto -lm -lpcre -ledit -lncursesw -lz
 
-ls -lah build/
-[ "$DEBUG" = 'YES' ] || strip build/njs
-file build/njs
+# Build shell if requested
+if [ "$BUILD_SHELL" = "1" ]; then
+	echo "Building njs shell..."
+	cc -o build/njs \
+		$NJS_CFLAGS $LDFLAGS \
+		-Isrc -Ibuild -Injs \
+		$NJS_SHELL_C \
+		build/libnjs.a \
+		-lcrypto -lm -lpcre -ledit -lncursesw -lz
 
-case "$HOST_OS" in
-	darwin) otool -L build/njs;;
-esac
+	ls -lah build/
+	[ "$DEBUG" = 'YES' ] || strip build/njs
+	file build/njs
 
-./build/njs -V
+	case "$HOST_OS" in
+		darwin) otool -L build/njs;;
+	esac
+
+	./build/njs -V
+fi
+
+# Build nginx modules if requested
+if [ "$BUILD_MODULES" = "1" ]; then
+	echo "Building nginx modules..."
+	
+	# Create nginx module directory structure
+	mkdir -p build/nginx-modules
+	
+	# Check if we have nginx source directory
+	NGINX_DIR=""
+	if [ -d "nginx" ]; then
+		NGINX_DIR="nginx"
+	else
+		# Try to find nginx directory from .SOURCES
+		NGINX_DIR=$(sed -En 's|.* ([^ ]*) nginx$|nginx-\1|p;q' .SOURCES 2>/dev/null || echo "")
+		if [ ! -d "$NGINX_DIR" ]; then
+			echo "ERROR: nginx source directory not found. Please ensure nginx sources are available." >&2
+			echo "You may need to run: ./scripts/fetch-sources nginx/nginx@<version>" >&2
+			exit 1
+		fi
+	fi
+	
+	echo "Using nginx directory: $NGINX_DIR"
+	
+	# Set environment variables for module configuration
+	export NJS_LIBXSLT=NO  # Disable libxslt to reduce dependencies
+	
+	# Build HTTP module
+	if [ "$MODULE_TYPE" = "both" ] || [ "$MODULE_TYPE" = "http" ]; then
+		echo "Building HTTP module..."
+		cd "$NGINX_DIR"
+		
+		# Configure nginx with njs HTTP module
+		./auto/configure \
+			--with-compat \
+			--add-dynamic-module=../nginx \
+			--with-cc-opt="$CFLAGS" \
+			--with-ld-opt="$LDFLAGS" \
+			--with-debug="$DEBUG" \
+			--without-http_rewrite_module \
+			--without-http_gzip_module
+		
+		# Build only the module
+		make modules
+		
+		# Copy HTTP module
+		if [ -f "objs/ngx_http_js_module.so" ]; then
+			cp objs/ngx_http_js_module.so ../build/nginx-modules/
+			echo "HTTP module built: build/nginx-modules/ngx_http_js_module.so"
+		else
+			echo "WARNING: HTTP module not found in objs/"
+		fi
+		
+		cd ..
+	fi
+	
+	# Build Stream module  
+	if [ "$MODULE_TYPE" = "both" ] || [ "$MODULE_TYPE" = "stream" ]; then
+		echo "Building Stream module..."
+		cd "$NGINX_DIR"
+		
+		# Clean previous build
+		make clean 2>/dev/null || true
+		
+		# Configure nginx with njs Stream module
+		./auto/configure \
+			--with-compat \
+			--with-stream \
+			--add-dynamic-module=../nginx \
+			--with-cc-opt="$CFLAGS" \
+			--with-ld-opt="$LDFLAGS" \
+			--with-debug="$DEBUG" \
+			--without-http_rewrite_module \
+			--without-http_gzip_module
+		
+		# Build only the module
+		make modules
+		
+		# Copy Stream module
+		if [ -f "objs/ngx_stream_js_module.so" ]; then
+			cp objs/ngx_stream_js_module.so ../build/nginx-modules/
+			echo "Stream module built: build/nginx-modules/ngx_stream_js_module.so"
+		else
+			echo "WARNING: Stream module not found in objs/"
+		fi
+		
+		cd ..
+	fi
+	
+	# List built modules
+	echo "Built modules:"
+	ls -lah build/nginx-modules/ || echo "No modules directory found"
+fi
 
 if [ -f linker.map ]; then
 	"$SCRIPT_DIR"/parse-mapfile-loaded-libs linker.map | tee -a .SOURCES
 fi
 
-BIN_NAME="njs-${NJS_VERSION}${VARIANT}-$HOST_ARCH-$HOST_OS"
-
+# Create artifacts
 mkdir -p artifact/
-install build/njs artifact/$BIN_NAME
-mv .SOURCES artifact/$BIN_NAME.sources
+
+if [ "$BUILD_SHELL" = "1" ]; then
+	BIN_NAME="njs-${NJS_VERSION}${VARIANT}-$HOST_ARCH-$HOST_OS"
+	install build/njs artifact/$BIN_NAME
+	echo "Shell binary: artifact/$BIN_NAME"
+fi
+
+if [ "$BUILD_MODULES" = "1" ] && [ -d "build/nginx-modules" ]; then
+	MODULE_ARCHIVE="njs-modules-${NJS_VERSION}${VARIANT}-$HOST_ARCH-$HOST_OS.tar.gz"
+	cd build/nginx-modules
+	tar -czf "../../artifact/$MODULE_ARCHIVE" *.so 2>/dev/null || echo "No .so files to archive"
+	cd ../..
+	echo "Modules archive: artifact/$MODULE_ARCHIVE"
+fi
+
+# Copy sources file
+if [ -f .SOURCES ]; then
+	if [ "$BUILD_SHELL" = "1" ]; then
+		cp .SOURCES artifact/${BIN_NAME}.sources
+	fi
+	if [ "$BUILD_MODULES" = "1" ]; then
+		cp .SOURCES artifact/${MODULE_ARCHIVE%.tar.gz}.sources 2>/dev/null || true
+	fi
+fi
 
 cd artifact/
-sha1sum $BIN_NAME > $BIN_NAME.sha1
+
+# Generate checksums
+if [ "$BUILD_SHELL" = "1" ] && [ -f "$BIN_NAME" ]; then
+	sha1sum $BIN_NAME > $BIN_NAME.sha1
+fi
+
+if [ "$BUILD_MODULES" = "1" ] && [ -f "$MODULE_ARCHIVE" ]; then
+	sha1sum $MODULE_ARCHIVE > $MODULE_ARCHIVE.sha1
+fi
+
+echo "Build completed successfully!"

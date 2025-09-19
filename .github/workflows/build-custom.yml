@@ -246,6 +246,9 @@ jobs:
       - name: Download and extract njs
         run: ./scripts/fetch-sources -d . nginx/njs@${{ matrix.njs_version }}
 
+      - name: Download and extract nginx for module building
+        run: ./scripts/fetch-sources -d . nginx/nginx@release-1.28.x
+
       # Linux 构建
       - name: Install Alpine ${{ env.ALPINE_BRANCH }} for ${{ matrix.arch }}
         if: matrix.platform == 'linux'
@@ -256,42 +259,48 @@ jobs:
           packages: >
             build-base
             linux-headers
+            libedit-dev
+            libedit-static
+            ncurses-dev
+            ncurses-static
             openssl-dev
             openssl-libs-static
             pcre-dev
             zlib-dev
             zlib-static
 
-      - name: Build njs (Linux)
+      - name: Build njs shell and nginx modules (Linux)
         if: matrix.platform == 'linux'
         env:
           VARIANT: ${{ matrix.variant_suffix }}
           CFLAGS: ${{ env.CFLAGS }}
           LDFLAGS: ${{ env.LINUX_LDFLAGS }}
-        run: ./scripts/build-njs
+        run: ./scripts/build-njs --with-modules
         shell: alpine.sh {0}
 
       # macOS 构建
       - name: Install dependencies (macOS)
         if: matrix.platform == 'darwin'
-        run: brew install gsed jq openssl@3 pcre zlib
+        run: brew install gsed jq libedit openssl@3 ncurses pcre zlib
 
       - name: Remove dylibs (macOS)
         if: matrix.platform == 'darwin'
         run: |
+          rm /opt/homebrew/opt/libedit/lib/*.dylib
           rm /opt/homebrew/opt/openssl/lib/*.dylib
+          rm /opt/homebrew/opt/ncurses/lib/*.dylib
           rm /opt/homebrew/opt/pcre/lib/*.dylib
           rm /opt/homebrew/opt/zlib/lib/*.dylib
 
-      - name: Build njs (macOS)
+      - name: Build njs shell and nginx modules (macOS)
         if: matrix.platform == 'darwin'
         env:
           VARIANT: ${{ matrix.variant_suffix }}
-          CFLAGS: ${{ env.CFLAGS }} -I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/pcre/include -I/opt/homebrew/opt/zlib/include
-          LDFLAGS: ${{ env.DARWIN_LDFLAGS }} -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/pcre/lib -L/opt/homebrew/opt/zlib/lib
-        run: ./scripts/build-njs
+          CFLAGS: ${{ env.CFLAGS }} -I/opt/homebrew/opt/libedit/include -I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/ncurses/include -I/opt/homebrew/opt/pcre/include -I/opt/homebrew/opt/zlib/include
+          LDFLAGS: ${{ env.DARWIN_LDFLAGS }} -L/opt/homebrew/opt/libedit/lib -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/ncurses/lib -L/opt/homebrew/opt/pcre/lib -L/opt/homebrew/opt/zlib/lib
+        run: ./scripts/build-njs --with-modules
 
-      - name: Upload njs binary
+      - name: Upload njs binaries and modules
         uses: actions/upload-artifact@v4
         with:
           name: njs-${{ matrix.njs_version }}${{ matrix.variant_suffix }}-${{ matrix.arch }}-${{ matrix.platform }}

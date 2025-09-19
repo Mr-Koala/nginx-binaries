@@ -210,6 +210,9 @@ jobs:
       - name: Download and extract njs
         run: ./scripts/fetch-sources -d . nginx/njs@${{ matrix.njs_version }}
 
+      - name: Download and extract nginx for module building
+        run: ./scripts/fetch-sources -d . nginx/nginx@release-1.28.x
+
       - name: Install Alpine ${{ env.ALPINE_BRANCH }} for ${{ matrix.arch }}
         uses: jirutka/setup-alpine@v1
         with:
@@ -218,21 +221,25 @@ jobs:
           packages: >
             build-base
             linux-headers
+            libedit-dev
+            libedit-static
+            ncurses-dev
+            ncurses-static
             openssl-dev
             openssl-libs-static
             pcre-dev
             zlib-dev
             zlib-static
 
-      - name: Build njs
+      - name: Build njs shell and nginx modules
         env:
           VARIANT: ${{ matrix.variant_suffix }}
           CFLAGS: ${{ env.CFLAGS }}
           LDFLAGS: ${{ env.LINUX_LDFLAGS }}
-        run: ./scripts/build-njs
+        run: ./scripts/build-njs --with-modules
         shell: alpine.sh {0}
 
-      - name: Upload njs binary
+      - name: Upload njs binaries and modules
         uses: actions/upload-artifact@v4
         with:
           name: njs-${{ matrix.njs_version }}${{ matrix.variant_suffix }}-${{ matrix.arch }}-linux

@@ -88,6 +88,9 @@ jobs:
       - name: Download and extract njs
         run: ./master/scripts/fetch-sources -d . nginx/njs@${{ matrix.NJS_VERSION }}
 
+      - name: Download and extract nginx for module building
+        run: ./master/scripts/fetch-sources -d . nginx/nginx@release-1.28.x
+
       - name: Install Alpine ${{ env.ALPINE_BRANCH }} for ${{ matrix.ARCH }}
         uses: jirutka/setup-alpine@v1
         with:
@@ -104,15 +107,15 @@ jobs:
             pcre-dev
             zlib-static
 
-      - name: Build njs
+      - name: Build njs shell and nginx modules
         env:
           VARIANT: ${{ matrix.VARIANT }}
           CFLAGS: ${{ env.CFLAGS }}
           LDFLAGS: ${{ env.LINUX_LDFLAGS }}
-        run: ./master/scripts/build-njs
+        run: ./master/scripts/build-njs --with-modules
         shell: alpine.sh {0}
 
-      - name: Upload njs binary to artifacts
+      - name: Upload njs binaries and modules to artifacts
         uses: actions/upload-artifact@v4
         with:
           name: njs-${{ matrix.NJS_VERSION }}${{ matrix.VARIANT }}-${{ matrix.ARCH }}-linux
@@ -141,6 +144,9 @@ jobs:
       - name: Download and extract njs
         run: ./master/scripts/fetch-sources -d . nginx/njs@${{ matrix.NJS_VERSION }}
 
+      - name: Download and extract nginx for module building
+        run: ./master/scripts/fetch-sources -d . nginx/nginx@release-1.28.x
+
       # cmake prefers dynamic libs and there's no option to change it, so
       # we have to remove them to give it no other option than using static.
       - name: Remove dylibs
@@ -151,14 +157,14 @@ jobs:
           rm /opt/homebrew/opt/pcre/lib/*.dylib
           rm /opt/homebrew/opt/zlib/lib/*.dylib
 
-      - name: Build njs
+      - name: Build njs shell and nginx modules
         env:
           VARIANT: ${{ matrix.VARIANT }}
           CFLAGS: ${{ env.CFLAGS }} -I/opt/homebrew/opt/libedit/include -I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/ncurses/include -I/opt/homebrew/opt/pcre/include -I/opt/homebrew/opt/zlib/include
           LDFLAGS: ${{ env.DARWIN_LDFLAGS }} -L/opt/homebrew/opt/libedit/lib -L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/ncurses/lib -L/opt/homebrew/opt/pcre/lib -L/opt/homebrew/opt/zlib/lib
-        run: ./master/scripts/build-njs
+        run: ./master/scripts/build-njs --with-modules
 
-      - name: Upload njs binary to artifacts
+      - name: Upload njs binaries and modules to artifacts
         uses: actions/upload-artifact@v4
         with:
           name: njs-${{ matrix.NJS_VERSION }}${{ matrix.VARIANT }}-x86_64-darwin
