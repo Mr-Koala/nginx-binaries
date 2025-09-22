@@ -1,18 +1,5 @@
 name: binaries
 on:
-  push:
-    # Don't run on version tags (these are used for JS module).
-    tags-ignore:
-      - 'v**'
-    branches:
-      - '**'
-    paths:
-      - .github/workflows/binaries.yml
-      - patches/*
-      - scripts/*
-  pull_request:
-  schedule:
-    - cron:  '0 0 * * 0'  # run each Sunday
   workflow_dispatch:
     inputs:
       nginx_versions:
