@@ -1,6 +1,13 @@
 name: Optimized Build (Linux Only)
 
 on:
+  push:
+    branches:
+      - '**'
+    paths:
+      - .github/workflows/build-linux.yml
+      - patches/*
+      - scripts/*
   workflow_dispatch:
     inputs:
       build_nginx:
