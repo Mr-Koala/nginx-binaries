@@ -319,12 +319,7 @@ jobs:
           else
             git commit -m "Update optimized binaries - $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
-Built with:
-- nginx versions: ${{ inputs.nginx_versions }}
-- njs versions: ${{ inputs.njs_versions }}
-- variants: ${{ inputs.build_variants }}
-- architectures: ${{ inputs.architectures }}
-- platform: linux only"
+Built with nginx versions: ${{ inputs.nginx_versions }}, njs versions: ${{ inputs.njs_versions }}, variants: ${{ inputs.build_variants }}, architectures: ${{ inputs.architectures }}, platform: linux only"
             git push
             echo "✅ Binaries published to binaries branch"
           fi

@@ -99,21 +99,31 @@ if [ "$BUILD_MODULES" = "1" ]; then
 	# Create nginx module directory structure
 	mkdir -p build/nginx-modules
 	
-	# Check if we have nginx source directory
+	# Check if we have nginx source directory (should be in parent directory)
 	NGINX_DIR=""
-	if [ -d "nginx" ]; then
-		NGINX_DIR="nginx"
+	if [ -d "../nginx" ]; then
+		NGINX_DIR="../nginx"
 	else
-		# Try to find nginx directory from .SOURCES
-		NGINX_DIR=$(sed -En 's|.* ([^ ]*) nginx$|nginx-\1|p;q' .SOURCES 2>/dev/null || echo "")
+		# Try to find nginx directory from .SOURCES in parent directory
+		NGINX_DIR=$(sed -En 's|.* ([^ ]*) nginx$|../nginx-\1|p;q' ../.SOURCES 2>/dev/null || echo "")
 		if [ ! -d "$NGINX_DIR" ]; then
 			echo "ERROR: nginx source directory not found. Please ensure nginx sources are available." >&2
-			echo "You may need to run: ./scripts/fetch-sources nginx/nginx@<version>" >&2
+			echo "Expected location: ../nginx or ../nginx-VERSION" >&2
+			echo "Current working directory: $(pwd)" >&2
+			echo "Available directories:" >&2
+			ls -la ../ | grep nginx || echo "No nginx directories found"
 			exit 1
 		fi
 	fi
 	
 	echo "Using nginx directory: $NGINX_DIR"
+	
+	# Get absolute paths
+	NJS_DIR=$(pwd)
+	NGINX_ABS_DIR=$(cd "$NGINX_DIR" && pwd)
+	
+	echo "NJS directory: $NJS_DIR"
+	echo "Nginx directory: $NGINX_ABS_DIR"
 	
 	# Set environment variables for module configuration
 	export NJS_LIBXSLT=NO  # Disable libxslt to reduce dependencies
@@ -121,12 +131,12 @@ if [ "$BUILD_MODULES" = "1" ]; then
 	# Build HTTP module
 	if [ "$MODULE_TYPE" = "both" ] || [ "$MODULE_TYPE" = "http" ]; then
 		echo "Building HTTP module..."
-		cd "$NGINX_DIR"
+		cd "$NGINX_ABS_DIR"
 		
 		# Configure nginx with njs HTTP module
 		./auto/configure \
 			--with-compat \
-			--add-dynamic-module=../nginx \
+			--add-dynamic-module="$NJS_DIR/nginx" \
 			--with-cc-opt="$CFLAGS" \
 			--with-ld-opt="$LDFLAGS" \
 			--with-debug="$DEBUG" \
@@ -138,19 +148,20 @@ if [ "$BUILD_MODULES" = "1" ]; then
 		
 		# Copy HTTP module
 		if [ -f "objs/ngx_http_js_module.so" ]; then
-			cp objs/ngx_http_js_module.so ../build/nginx-modules/
+			cp objs/ngx_http_js_module.so "$NJS_DIR/build/nginx-modules/"
 			echo "HTTP module built: build/nginx-modules/ngx_http_js_module.so"
 		else
 			echo "WARNING: HTTP module not found in objs/"
+			ls -la objs/ || true
 		fi
 		
-		cd ..
+		cd "$NJS_DIR"
 	fi
 	
 	# Build Stream module  
 	if [ "$MODULE_TYPE" = "both" ] || [ "$MODULE_TYPE" = "stream" ]; then
 		echo "Building Stream module..."
-		cd "$NGINX_DIR"
+		cd "$NGINX_ABS_DIR"
 		
 		# Clean previous build
 		make clean 2>/dev/null || true
@@ -159,7 +170,7 @@ if [ "$BUILD_MODULES" = "1" ]; then
 		./auto/configure \
 			--with-compat \
 			--with-stream \
-			--add-dynamic-module=../nginx \
+			--add-dynamic-module="$NJS_DIR/nginx" \
 			--with-cc-opt="$CFLAGS" \
 			--with-ld-opt="$LDFLAGS" \
 			--with-debug="$DEBUG" \
@@ -171,13 +182,14 @@ if [ "$BUILD_MODULES" = "1" ]; then
 		
 		# Copy Stream module
 		if [ -f "objs/ngx_stream_js_module.so" ]; then
-			cp objs/ngx_stream_js_module.so ../build/nginx-modules/
+			cp objs/ngx_stream_js_module.so "$NJS_DIR/build/nginx-modules/"
 			echo "Stream module built: build/nginx-modules/ngx_stream_js_module.so"
 		else
 			echo "WARNING: Stream module not found in objs/"
+			ls -la objs/ || true
 		fi
 		
-		cd ..
+		cd "$NJS_DIR"
 	fi
 	
 	# List built modules
